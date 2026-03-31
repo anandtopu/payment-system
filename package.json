@@ -1,0 +1,13 @@
+{
+  "name": "payment-system",
+  "private": true,
+  "workspaces": [
+    "services/*"
+  ],
+  "scripts": {
+    "dev": "docker compose up --build",
+    "down": "docker compose down -v",
+    "test": "npm -ws test",
+    "lint": "npm -ws run lint"
+  }
+}
