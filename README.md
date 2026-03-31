@@ -2,6 +2,71 @@
 
 This repository is a production-style payment processing system built for system design practice and as a deployable GitHub portfolio project.
 
+## System Architecture
+
+```mermaid
+graph TD
+    subgraph External
+        Sim[Payment Simulator]
+        Merc[Merchant Webhook Receiver]
+        User[Dashboard User]
+    end
+
+    subgraph API Layer
+        GW[API Gateway]
+    end
+
+    subgraph Core Services
+        PIS[Payment Intent Service]
+        TXS[Transaction Service]
+        WHS[Webhook Service]
+        Recon[Reconciliation Worker]
+    end
+
+    subgraph AI Ops & UI
+        AIOps[AI Ops Service]
+        Dash[Dashboard Service]
+    end
+
+    subgraph Storage & Messaging
+        PG[(PostgreSQL)]
+        Redis[(Redis)]
+        Kafka[Kafka]
+        Debezium[Debezium Kafka Connect]
+    end
+
+    %% External Interactions
+    Sim -- HTTP Requests --> GW
+    User -- Browser --> Dash
+    WHS -- HTTP Post --> Merc
+
+    %% API Routing
+    GW -- HTTP --> PIS
+    GW -- HTTP --> TXS
+    GW -- HTTP --> WHS
+    
+    %% Service to storage
+    GW -- Cache/Rate Limit --> Redis
+    PIS -- Read/Write --> PG
+    TXS -- Read/Write --> PG
+    WHS -- Read/Write --> PG
+    Recon -- Poll/Update --> PG
+
+    %% CDC Pipeline
+    PG -- WAL --> Debezium
+    Debezium -- CDC Events --> Kafka
+
+    %% Kafka Consumers
+    TXS -. Pub/Sub .-> Kafka
+    WHS -. Consume CDC .-> Kafka
+    AIOps -. Consume CDC .-> Kafka
+
+    %% AI Ops and Dashboard
+    AIOps -- Write Alerts --> PG
+    Dash -- HTTP API --> AIOps
+    Dash -- Read --> PG
+```
+
 ## Capabilities (in-scope)
 - Create `PaymentIntent`
 - Create `charge` `Transaction` for a `PaymentIntent`
