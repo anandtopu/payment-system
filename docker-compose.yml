@@ -75,20 +75,46 @@ services:
         condition: service_completed_successfully
       kafka-connect:
         condition: service_started
-    entrypoint: ["/bin/sh", "-c"]
-    command: >
-      echo 'Waiting for Kafka Connect...' &&
-      until curl -sf http://kafka-connect:8083/connectors >/dev/null; do sleep 2; done &&
-      echo 'Registering Postgres connector...' &&
-      curl -sS -X POST http://kafka-connect:8083/connectors -H 'Content-Type: application/json' --data-binary @/connector-config.json || true &&
-      echo 'Done.'
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        (set -o pipefail) 2>/dev/null || true
+        echo 'Waiting for Kafka Connect...'
+        until curl -sf http://kafka-connect:8083/connectors >/dev/null; do sleep 2; done
+        echo 'Registering Postgres connector...'
+        set +e
+        curl -sS -D /tmp/headers -o /tmp/resp -X POST http://kafka-connect:8083/connectors -H 'Content-Type: application/json' --data-binary @/connector-config.json
+        set -e
+        first=$$(head -n 1 /tmp/headers 2>/dev/null || true)
+        code=""
+        if [ -n "$$first" ]; then
+          set -- $$first
+          code=$${2:-""}
+        fi
+        echo "HTTP $$code"
+        cat /tmp/resp || true
+        if [ -z "$$code" ]; then
+          echo 'Connector registration curl failed (no HTTP code).'
+          echo 'First header line:'
+          head -n 1 /tmp/headers 2>/dev/null || true
+          exit 1
+        fi
+        if [ "$$code" = "201" ] || [ "$$code" = "409" ]; then
+          echo 'Connector registered (or already existed).'
+        else
+          echo 'Connector registration failed.'
+          exit 1
+        fi
+        echo 'Done.'
     volumes:
       - ./infra/debezium/connector-config.json:/connector-config.json:ro
 
   redis:
     image: redis:7
     ports:
-      - "${REDIS_HOST_PORT:-6379}:6379"
+      - "${REDIS_HOST_PORT:-6380}:6379"
 
   api-gateway:
     build:
@@ -103,6 +129,7 @@ services:
       transaction-service:
         condition: service_started
     environment:
+      NODE_ENV: development
       PORT: 3000
       REDIS_URL: redis://redis:6379
       DATABASE_URL: postgres://payment:payment@postgres:5432/payment
@@ -111,7 +138,7 @@ services:
       WEBHOOK_SERVICE_URL: http://webhook-service:3003
       DEV_SIGNING_ENABLED: "true"
     ports:
-      - "${API_GATEWAY_HOST_PORT:-3000}:3000"
+      - "${API_GATEWAY_HOST_PORT:-3005}:3000"
 
   payment-intent-service:
     build:
@@ -172,6 +199,52 @@ services:
       DATABASE_URL: postgres://payment:payment@postgres:5432/payment
       RECONCILIATION_POLL_MS: ${RECONCILIATION_POLL_MS:-2000}
       RECONCILE_AFTER_MS: ${RECONCILE_AFTER_MS:-10000}
+
+  ai-ops-service:
+    build:
+      context: ./services/ai-ops-service
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_started
+    environment:
+      NODE_ENV: development
+      PORT: 6000
+      DATABASE_URL: postgres://payment:payment@postgres:5432/payment
+      KAFKA_BROKERS: kafka:29092
+      AIOPS_REPORT_EVERY_MS: ${AIOPS_REPORT_EVERY_MS:-60000}
+      AIOPS_WINDOW_MS: ${AIOPS_WINDOW_MS:-60000}
+    ports:
+      - "${AIOPS_HOST_PORT:-6000}:6000"
+
+  dashboard-service:
+    build:
+      context: ./services/dashboard-service
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      ai-ops-service:
+        condition: service_started
+    environment:
+      PORT: 7000
+      DATABASE_URL: postgres://payment:payment@postgres:5432/payment
+      AIOPS_URL: http://ai-ops-service:6000
+    ports:
+      - "${DASHBOARD_HOST_PORT:-7000}:7000"
+
+  payment-simulator:
+    build:
+      context: ./services/payment-simulator
+    depends_on:
+      api-gateway:
+        condition: service_started
+    environment:
+      GATEWAY_URL: http://api-gateway:3000
+      MERCHANT_PUBLIC_KEY: pk_demo_123
+      SIM_TOTAL: ${SIM_TOTAL:-50}
+      SIM_CONCURRENCY: ${SIM_CONCURRENCY:-5}
+    restart: "no"
 
 volumes:
   postgres_data:
