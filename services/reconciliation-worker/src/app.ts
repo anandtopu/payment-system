@@ -1,6 +1,8 @@
 import pg from 'pg';
+import { GoogleGenAI } from '@google/genai';
 
 const { Pool } = pg;
+const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 
 type Row = {
   id: string;
@@ -27,6 +29,40 @@ async function reconcileOnce() {
   );
 
   for (const tx of res.rows) {
+    let agentReasoning = 'reconciled_timeout';
+    let forceFail = true;
+
+    if (ai) {
+      try {
+        const prompt = `You are a Smart Reconciliation Agent. A transaction (ID: ${tx.id}) for merchant ${tx.merchant_id} has been stuck in 'timeout' for longer than usual.
+Raw state: ${JSON.stringify(tx)}
+Should we FAIL this transaction completely, or keep it open?
+Respond in strictly JSON format like {"decision": "fail" | "keep", "reason": "..."}`;
+        
+        const res = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: prompt
+        });
+
+        const text = res.text?.replace(/```json/g, '').replace(/```/g, '');
+        if (text) {
+          const parsed = JSON.parse(text);
+          if (parsed.decision === 'keep') forceFail = false;
+          if (parsed.reason) agentReasoning = parsed.reason;
+        }
+      } catch (err: any) {
+        // eslint-disable-next-line no-console
+        console.error(JSON.stringify({ msg: 'llm_reconcile_fail', err: err.message }));
+      }
+    }
+
+    if (!forceFail) {
+      // Agent says keep it open, do not fail.
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify({ level: 'info', msg: 'agent_kept_open', txId: tx.id }));
+      continue;
+    }
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -34,10 +70,10 @@ async function reconcileOnce() {
       const updatedTx = await client.query(
         `UPDATE transactions
          SET status = 'failed',
-             failure_reason = COALESCE(failure_reason, 'reconciled_timeout')
+             failure_reason = COALESCE(failure_reason, $2)
          WHERE id = $1 AND status = 'timeout'
          RETURNING id, payment_intent_id`,
-        [tx.id]
+        [tx.id, agentReasoning]
       );
 
       if (!updatedTx.rowCount) {
@@ -50,9 +86,9 @@ async function reconcileOnce() {
       await client.query(
         `UPDATE payment_intents
          SET status = 'failed',
-             error_message = COALESCE(error_message, 'reconciled_timeout')
+             error_message = COALESCE(error_message, $2)
          WHERE id = $1 AND status = 'processing'`,
-        [paymentIntentId]
+        [paymentIntentId, agentReasoning]
       );
 
       await client.query('COMMIT');

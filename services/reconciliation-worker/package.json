@@ -9,6 +9,7 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@google/genai": "^1.47.0",
     "pg": "8.11.5"
   },
   "devDependencies": {
