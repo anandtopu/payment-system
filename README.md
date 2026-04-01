@@ -74,9 +74,10 @@ graph TD
 - Webhooks (server-to-server) for status changes
 - Merchant authentication via API key + HMAC request signing + nonce replay protection
 - Durable audit trail via Postgres WAL -> Debezium CDC -> Kafka topics
-- Agentic AI Ops (heuristic) monitoring + fraud-style alerting + intelligence reports
-- Custom dashboard UI (no Grafana) to explore flows, alerts, and reports
-- End-to-end traffic simulator to generate realistic local payment traffic
+- **Agentic AI Ops**: True LLM-driven inference powered by the `@google/genai` (Gemini) SDK for anomaly triage and executive reporting
+- **Conversational Debugger**: Embedded natural-language chatbot in the dashboard to analyze transaction flow joined state
+- **Smart Reconciliation**: LLM-aided transaction healing deciding on failure states vs potential recovery
+- End-to-end Adversarial traffic simulator driven by LLM generative payment payloads
 
 ## Local Development
 ### Prereqs
@@ -99,9 +100,21 @@ Dashboard UI: http://localhost:7000
 - `public_api_key`: `pk_demo_123`
 - `secret_api_key`: `sk_demo_123`
 
-## New: Agentic AI Ops + Dashboard + Simulator
+## New: LLM-Driven Agentic AI Workflows
 
-This repo includes an **agentic (heuristic) AI ops workflow** that consumes CDC events from Kafka, computes risk snapshots, emits deduped fraud-style alerts, and periodically generates mock “intelligence reports”. A lightweight dashboard UI renders these insights.
+This repo includes a deeply integrated **Agentic AI workflow** powered by the `@google/genai` SDK. It replaces legacy hardcoded heuristics with autonomous reasoning loops across four distinct service pillars:
+
+1. **Auto-Triage Fraud Agent** (`ai-ops-service`)
+2. **Conversational Support Debugger** (`dashboard-service`)
+3. **Smart Healing Agent** (`reconciliation-worker`)
+4. **Adversarial Flow Simulator** (`payment-simulator`)
+
+> **Note**: These services are built with graceful degradation. If you do not provide a `GEMINI_API_KEY` in the environment, the system falls back to static math heuristics and deterministic mock functionality.
+
+To unlock the AI models, configure the `.env` file before booting the cluster:
+```env
+GEMINI_API_KEY=your-gemini-api-key-here
+```
 
 ### Data pipeline (CDC)
 
@@ -128,13 +141,9 @@ Runs a Kafka consumer over CDC topics and maintains per-merchant rolling windows
 
 Key behaviors:
 
-- Computes a demo-friendly risk score (0-100) using:
-  - payment failure rate
-  - transaction timeout rate
-  - webhook failure rate
-  - payment creation velocity
-- Emits alerts into `fraud_alerts` with dedupe (one open alert per merchant/type per ~5 minutes)
-- Generates mock intelligence reports into `intelligence_reports` on a timer
+- Computes a dynamic risk score using failure/timeout distributions.
+- **LLM Triage**: Feeds high-risk anomaly signatures to Gemini to produce a contextual **Root Cause Analysis** instead of just a raw number, inserted directly into the `fraud_alerts` database.
+- **Executive Summaries**: Periodically passes aggregated network statistics to the LLM to generate highly contextual, human-readable intelligence reports.
 
 API endpoints (read/write):
 
@@ -160,6 +169,7 @@ Fastify web UI that calls `ai-ops-service` and renders:
 - Alerts (table)
 - Intelligence reports
 - Flow explorer (joins `payment_intents` + `transactions` + `webhook_deliveries` by `payment_intent_id`)
+  - **Conversational AI Debugger**: A conversational panel asking natural-language questions about the queried `payment_intent_id`. The backend pulls the entire join state into context windows and gives a descriptive debug response.
 
 Alert actions:
 
@@ -173,7 +183,7 @@ Environment variables:
 
 ### Payment Simulator (`payment-simulator`)
 
-Generates realistic local traffic by creating payment intents + transactions through the API gateway.
+Generates realistic local traffic by creating payment intents + transactions. Rather than looping static conditions, the **Adversarial Simulator Agent** dynamically queries Gemini for bursty, malformed anomaly batch profiles to generate unpredictable, sophisticated edge-cases that stress-test the pipeline.
 
 Run:
 
