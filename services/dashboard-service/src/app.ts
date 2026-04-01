@@ -2,8 +2,10 @@ import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
 import formbody from '@fastify/formbody';
 import pg from 'pg';
 import { request as undiciRequest } from 'undici';
+import { GoogleGenAI } from '@google/genai';
 
 const { Pool } = pg;
+const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 
 export const app = Fastify({ logger: true });
 await app.register(formbody);
@@ -308,16 +310,114 @@ app.get('/flow/view', async (req: FastifyRequest, reply: FastifyReply) => {
 
   const body = `
   <html><head><title>Flow ${htmlEscape(id)}</title><meta charset="utf-8" />
-  <style>body{font-family:ui-sans-serif,system-ui;margin:24px} .card{border:1px solid #e2e8f0;border-radius:12px;padding:16px} pre{white-space:pre-wrap}</style>
+  <style>
+    body{font-family:ui-sans-serif,system-ui;margin:24px} 
+    .card{border:1px solid #e2e8f0;border-radius:12px;padding:16px} 
+    pre{white-space:pre-wrap}
+    .chat-box { border: 1px solid #cbd5e1; border-radius: 12px; padding: 16px; margin-top: 16px; background: #f8fafc; }
+    input.chat-input { padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; width: 400px; }
+    button { padding: 10px 16px; background: #0f172a; color: white; border: none; border-radius: 8px; cursor: pointer; }
+    .chat-msg { background: #e2e8f0; padding: 10px; border-radius: 8px; margin-bottom: 8px; }
+    .ai-msg { background: #dbeafe; }
+  </style>
   </head><body>
   <h1>Flow view</h1>
   <div><a href="/flow">Back</a></div>
   <div style="height: 12px"></div>
-  <div class="card"><pre>${htmlEscape(JSON.stringify(payload, null, 2))}</pre></div>
+  
+  <div class="chat-box">
+    <h2>Agentic Support Debugger</h2>
+    <div id="chat-log"></div>
+    <form id="chat-form" style="margin-top: 12px; display: flex; gap: 8px;">
+      <input class="chat-input" id="chat-input" placeholder="e.g., Why did this transaction fail?" required />
+      <button type="submit" id="chat-btn">Ask AI</button>
+    </form>
+    <script>
+      const form = document.getElementById('chat-form');
+      const input = document.getElementById('chat-input');
+      const btn = document.getElementById('chat-btn');
+      const log = document.getElementById('chat-log');
+      
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const q = input.value;
+        if(!q) return;
+        
+        log.innerHTML += '<div class="chat-msg"><b>You:</b> ' + q + '</div>';
+        input.value = '';
+        btn.disabled = true;
+        btn.textContent = 'Thinking...';
+        
+        try {
+          const res = await fetch('/flow/debug', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question: q, payment_intent_id: '${id}' })
+          });
+          const data = await res.json();
+          log.innerHTML += '<div class="chat-msg ai-msg"><b>AI:</b> ' + data.answer + '</div>';
+        } catch(err) {
+          log.innerHTML += '<div class="chat-msg" style="color:red"><b>Error:</b> ' + err.message + '</div>';
+        }
+        
+        btn.disabled = false;
+        btn.textContent = 'Ask AI';
+      });
+    </script>
+  </div>
+
+  <div class="card" style="margin-top: 24px;"><pre>${htmlEscape(JSON.stringify(payload, null, 2))}</pre></div>
   </body></html>`;
 
   reply.header('content-type', 'text/html; charset=utf-8');
   return reply.send(body);
+});
+
+app.post('/flow/debug', async (req: FastifyRequest, reply: FastifyReply) => {
+  const { question, payment_intent_id } = req.body as any;
+  if (!ai) {
+    return reply.send({ answer: "Agentic features are currently disabled. (GEMINI_API_KEY missing)" });
+  }
+
+  try {
+    const [pi, tx, wh] = await Promise.all([
+      pool.query(
+        'SELECT id, amount_in_cents, currency, status, error_message, updated_at FROM payment_intents WHERE id = $1',
+        [payment_intent_id]
+      ),
+      pool.query(
+        'SELECT status, failure_reason, created_at, updated_at FROM transactions WHERE payment_intent_id = $1 ORDER BY created_at ASC',
+        [payment_intent_id]
+      ),
+      pool.query(
+        "SELECT event_type, status, last_error, last_status_code, updated_at FROM webhook_deliveries WHERE event_payload->>'id' = $1",
+        [payment_intent_id]
+      )
+    ]);
+
+    const context = JSON.stringify({
+      payment_intent: pi.rows[0],
+      transactions: tx.rows,
+      webhooks: wh.rows
+    });
+
+    const prompt = `You are an expert payment debugger agent. You help engineers and merchants figure out why a payment failed or timed out.
+The user is asking: "${question}"
+Here is the raw database joined state for payment_intent_id ${payment_intent_id}:
+${context}
+
+Explain what happened in a short, conversational, easy-to-understand 2-3 sentence response. DO NOT mention that you are an AI, or raw JSON keys. Just act as a senior engineer diagnosing the database row states.`;
+
+    const res = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt
+    });
+
+    return reply.send({ answer: res.text });
+  } catch (err: any) {
+    app.log.error(err, 'llm_chat_fail');
+    return reply.send({ answer: "I'm sorry, I encountered an error pulling data or contacting my brain." });
+  }
 });
 
 

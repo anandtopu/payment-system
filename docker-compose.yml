@@ -199,6 +199,7 @@ services:
       DATABASE_URL: postgres://payment:payment@postgres:5432/payment
       RECONCILIATION_POLL_MS: ${RECONCILIATION_POLL_MS:-2000}
       RECONCILE_AFTER_MS: ${RECONCILE_AFTER_MS:-10000}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
 
   ai-ops-service:
     build:
@@ -215,6 +216,7 @@ services:
       KAFKA_BROKERS: kafka:29092
       AIOPS_REPORT_EVERY_MS: ${AIOPS_REPORT_EVERY_MS:-60000}
       AIOPS_WINDOW_MS: ${AIOPS_WINDOW_MS:-60000}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     ports:
       - "${AIOPS_HOST_PORT:-6000}:6000"
 
@@ -230,6 +232,7 @@ services:
       PORT: 7000
       DATABASE_URL: postgres://payment:payment@postgres:5432/payment
       AIOPS_URL: http://ai-ops-service:6000
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     ports:
       - "${DASHBOARD_HOST_PORT:-7000}:7000"
 
@@ -244,6 +247,7 @@ services:
       MERCHANT_PUBLIC_KEY: pk_demo_123
       SIM_TOTAL: ${SIM_TOTAL:-50}
       SIM_CONCURRENCY: ${SIM_CONCURRENCY:-5}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     restart: "no"
 
 volumes:

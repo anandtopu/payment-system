@@ -2,8 +2,10 @@ import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
 import pg from 'pg';
 import crypto from 'node:crypto';
 import { Kafka } from 'kafkajs';
+import { GoogleGenAI } from '@google/genai';
 
 const { Pool } = pg;
+const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 
 type MerchantWindow = {
   windowStartMs: number;
@@ -122,10 +124,25 @@ async function maybeEmitAlert(snapshot: RiskSnapshot) {
   );
   if (res.rowCount) return;
 
+  let agentReasoning = '';
+  if (ai) {
+    try {
+      const res = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: `You are an AI Fraud Agent evaluating merchant ${snapshot.merchantId}.
+The heuristic risk score is ${snapshot.score}. Factors: ${JSON.stringify(snapshot.factors)}.
+Please write a concise 2-sentence autonomous triage report detailing the probable root cause of this anomaly.`
+      });
+      if (res.text) agentReasoning = res.text;
+    } catch (err: any) {
+      app.log.error({ err: err.message }, 'llm_alert_generation_failed');
+    }
+  }
+
   await pool.query(
     `INSERT INTO fraud_alerts (merchant_id, severity, type, score, evidence)
      VALUES ($1,$2,$3,$4,$5)`,
-    [snapshot.merchantId, snapshot.severity, 'merchant_risk', snapshot.score, snapshot.factors]
+    [snapshot.merchantId, snapshot.severity, 'merchant_risk', snapshot.score, { ...snapshot.factors, agentReasoning }]
   );
 
   app.log.warn({ merchantId: snapshot.merchantId, score: snapshot.score, severity: snapshot.severity }, 'fraud_alert_created');
@@ -203,12 +220,38 @@ async function generateReportOnce() {
     openAlerts: Number(openAlerts.rows[0]?.c ?? 0)
   };
 
-  const summary = summarizeTemplate({
+  let summary = summarizeTemplate({
     windowStart,
     windowEnd,
     totals,
     topMerchants: topMerchants.rows as any
   });
+
+  let details: any = {
+    totals,
+    topMerchants: topMerchants.rows
+  };
+
+  if (ai) {
+    try {
+      const prompt = `You are an AI Ops Agent for a critical payment gateway.
+Write a high-level executive intelligence report analyzing the system health over the last 5 minutes.
+Raw system data summary: \n${summary}\n
+Provide actionable insights and highlight any worrying trends in a professional operational tone.`;
+      
+      const res = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt
+      });
+
+      if (res.text) {
+        summary = res.text;
+        details.agent_driven = true;
+      }
+    } catch (err: any) {
+      app.log.error({ err: err.message }, 'llm_report_generation_failed');
+    }
+  }
 
   await pool.query(
     `INSERT INTO intelligence_reports (merchant_id, report_type, window_start, window_end, summary, details)
